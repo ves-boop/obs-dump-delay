@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Dump Delay for OBS Studio - Chocolatey package.
+     Placeholders (@VERSION@, @OBS_MAJOR@, @OBS_NEXT_MAJOR@, @REPO_URL@,
+     @REPO_RAW@) are filled in by installer\build-release.ps1. -->
+<package xmlns="http://schemas.microsoft.com/packaging/2015/06/nuspec.xsd">
+  <metadata>
+    <id>obs-dump-delay</id>
+    <version>@VERSION@</version>
+    <title>Dump Delay for OBS Studio</title>
+    <authors>Valerio Enrico Salvo (Ves)</authors>
+    <owners>ves-boop</owners>
+    <projectUrl>@REPO_URL@</projectUrl>
+    <packageSourceUrl>@REPO_URL@/tree/main/choco</packageSourceUrl>
+    <projectSourceUrl>@REPO_URL@</projectSourceUrl>
+    <docsUrl>@REPO_URL@#readme</docsUrl>
+    <bugTrackerUrl>@REPO_URL@/issues</bugTrackerUrl>
+    <releaseNotes>@REPO_URL@/releases/tag/v@VERSION@</releaseNotes>
+    <iconUrl>@REPO_RAW@/docs/images/panicone.png</iconUrl>
+    <licenseUrl>@REPO_URL@/blob/main/LICENSE</licenseUrl>
+    <requireLicenseAcceptance>false</requireLicenseAcceptance>
+    <copyright>Copyright (C) 2026 Valerio Enrico Salvo (Ves)</copyright>
+    <tags>obs obs-studio obs-plugin twitch streaming delay censor panic-button</tags>
+    <summary>Stream delay with a panic button for OBS Studio: drop the last seconds before they reach your viewers.</summary>
+    <description><![CDATA[
+**Dump Delay** adds a stream delay with a big red **panic button** to OBS Studio.
+
+Your viewers see the stream a few seconds late. If something goes wrong on stream, press the button:
+the seconds your viewers haven't seen yet are thrown away and never reach Twitch (or any RTMP server).
+A slate scene goes on air while the delay rebuilds, and the connection never drops.
+
+- Panic button dock in OBS, plus a hotkey
+- Configurable delay, slate scene and cut margin
+- English and Italian
+
+Requires OBS Studio @OBS_MAJOR@.x (64-bit). Close OBS Studio before installing or upgrading.
+]]></description>
+    <dependencies>
+      <dependency id="obs-studio" version="[@OBS_MAJOR@.0,@OBS_NEXT_MAJOR@.0)" />
+    </dependencies>
+  </metadata>
+  <files>
+    <file src="tools\**" target="tools" />
+  </files>
+</package>
