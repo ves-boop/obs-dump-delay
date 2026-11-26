@@ -33,6 +33,17 @@ enum dump_delay_status {
 
 enum dump_delay_status dump_delay_get_status(void);
 
+/* Twitch VOD track of the running dump-delay stream (set when it starts). */
+enum dump_delay_vod {
+	DUMP_DELAY_VOD_NONE,     /* no dump-delay stream running */
+	DUMP_DELAY_VOD_OFF,      /* OBS attached no VOD track encoder */
+	DUMP_DELAY_VOD_ON,       /* sent as audio track 1 */
+	DUMP_DELAY_VOD_MISMATCH, /* attached, but not sent: format differs */
+};
+
+/* mixer_track (1-based) is set when the result is ON or MISMATCH */
+enum dump_delay_vod dump_delay_get_vod(int *mixer_track);
+
 /* Plugin settings, stored in the plugin's config folder (UI thread). */
 struct dump_delay_config {
 	int delay_sec;

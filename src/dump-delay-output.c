@@ -122,6 +122,8 @@ struct dump_delay {
 	AVPacket *avpkt;
 	bool header_written;
 	bool vod_track; /* second audio encoder attached, sent as track 1 */
+	volatile long vod_state;  /* enum dump_delay_vod, for the dock */
+	volatile long vod_mixer;  /* 1-based mixer track of the VOD encoder */
 	uint8_t *silence;
 	int silence_size;
 	double silence_ms;
@@ -223,6 +225,22 @@ enum dump_delay_status dump_delay_get_status(void)
 			&active_dd->status);
 	pthread_mutex_unlock(&active_mutex);
 	return status;
+}
+
+enum dump_delay_vod dump_delay_get_vod(int *mixer_track)
+{
+	enum dump_delay_vod vod = DUMP_DELAY_VOD_NONE;
+
+	pthread_mutex_lock(&active_mutex);
+	if (active_dd) {
+		vod = (enum dump_delay_vod)os_atomic_load_long(
+			&active_dd->vod_state);
+		if (mixer_track)
+			*mixer_track =
+				(int)os_atomic_load_long(&active_dd->vod_mixer);
+	}
+	pthread_mutex_unlock(&active_mutex);
+	return vod;
 }
 
 /* ------------------------------------------------------------------------ */
@@ -391,23 +409,35 @@ static bool write_vod_tag(struct dump_delay *dd, const uint8_t *data,
 	return true;
 }
 
-static void setup_vod_track(struct dump_delay *dd, obs_encoder_t *aenc)
+/* Called at stream start, once OBS has attached its encoders, so the dock can
+ * show the VOD track state before the delayed connection is made. */
+static void setup_vod_track(struct dump_delay *dd)
 {
+	obs_encoder_t *aenc = obs_output_get_audio_encoder(dd->output, 0);
 	obs_encoder_t *vod = obs_output_get_audio_encoder(dd->output, 1);
 
 	dd->vod_track = false;
-	if (!vod)
+	os_atomic_set_long(&dd->vod_mixer, 0);
+	if (!vod) {
+		os_atomic_set_long(&dd->vod_state, DUMP_DELAY_VOD_OFF);
+		do_log(LOG_INFO, "Twitch VOD track: off (OBS attached no VOD track)");
 		return;
+	}
+
+	os_atomic_set_long(&dd->vod_mixer,
+			   (long)obs_encoder_get_mixer_index(vod) + 1);
 
 	if (obs_encoder_get_sample_rate(vod) != obs_encoder_get_sample_rate(aenc) ||
 	    audio_output_get_channels(obs_encoder_audio(vod)) !=
 		    audio_output_get_channels(obs_encoder_audio(aenc))) {
+		os_atomic_set_long(&dd->vod_state, DUMP_DELAY_VOD_MISMATCH);
 		do_log(LOG_WARNING,
 		       "VOD track encoder format differs from the stream track, VOD track not sent");
 		return;
 	}
 
 	dd->vod_track = true;
+	os_atomic_set_long(&dd->vod_state, DUMP_DELAY_VOD_ON);
 	do_log(LOG_INFO, "Twitch VOD track: mixer track %zu sent as audio track 1",
 	       obs_encoder_get_mixer_index(vod) + 1);
 }
@@ -419,8 +449,6 @@ static bool open_muxer(struct dump_delay *dd)
 	int sample_rate = (int)obs_encoder_get_sample_rate(aenc);
 	int channels = (int)audio_output_get_channels(obs_encoder_audio(aenc));
 	int ret;
-
-	setup_vod_track(dd, aenc);
 
 	if (!make_silence(dd, sample_rate, channels)) {
 		do_log(LOG_WARNING, "could not create AAC silence");
@@ -753,7 +781,6 @@ static void reset_worker_state(struct dump_delay *dd)
 		dd->silence_active[t] = false;
 		dd->silence_started[t] = false;
 	}
-	dd->vod_track = false;
 	dd->total_bytes = 0;
 	os_atomic_set_bool(&dd->dump_requested, false);
 }
@@ -942,6 +969,7 @@ static bool dd_start(void *data)
 		return false;
 	if (!load_settings(dd))
 		return false;
+	setup_vod_track(dd);
 
 	if (obs_output_get_delay(dd->output) > 0)
 		do_log(LOG_WARNING,

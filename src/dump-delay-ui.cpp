@@ -395,6 +395,13 @@ public:
 		status->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
 		status->setToolTip(T("Status.Tooltip"));
 
+		vod = new QLabel(this);
+		vod->setAlignment(Qt::AlignCenter);
+		vod->setWordWrap(true);
+		vod->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
+		vod->setToolTip(T("Vod.Tooltip"));
+		vod->setVisible(false);
+
 		panic = new PanicButton(this);
 
 		auto *hint = new QLabel(T("Dock.HotkeyHint"), this);
@@ -414,6 +421,7 @@ public:
 
 		auto *layout = new QVBoxLayout(this);
 		layout->addWidget(status);
+		layout->addWidget(vod);
 		layout->addWidget(panic, 1);
 		layout->addWidget(hint);
 		layout->addWidget(warning);
@@ -496,6 +504,8 @@ private:
 			status->setStyleSheet(QString("font-weight: bold; color: %1;").arg(color));
 		}
 
+		refreshVod();
+
 		QString warn;
 		if (enabled && dump_delay_obs_delay_enabled())
 			warn = T("Warn.ObsDelay");
@@ -508,7 +518,40 @@ private:
 		warning->setVisible(!warn.isEmpty());
 	}
 
+	/* What the running stream actually does with the Twitch VOD track, as
+	 * OBS set it up (Settings → Output). Hidden when not streaming. */
+	void refreshVod()
+	{
+		int mixer = 0;
+		QString text, color;
+
+		switch (dump_delay_get_vod(&mixer)) {
+		case DUMP_DELAY_VOD_ON:
+			text = T("Vod.On").arg(mixer);
+			color = "gray";
+			break;
+		case DUMP_DELAY_VOD_OFF:
+			text = T("Vod.Off");
+			color = "#d29922";
+			break;
+		case DUMP_DELAY_VOD_MISMATCH:
+			text = T("Vod.Mismatch").arg(mixer);
+			color = "#e5534b";
+			break;
+		case DUMP_DELAY_VOD_NONE:
+		default:
+			break;
+		}
+
+		if (text != vod->text()) {
+			vod->setText(text);
+			vod->setStyleSheet(QString("font-size: small; color: %1;").arg(color));
+		}
+		vod->setVisible(!text.isEmpty());
+	}
+
 	QLabel *status;
+	QLabel *vod;
 	PanicButton *panic;
 	QLabel *warning;
 };

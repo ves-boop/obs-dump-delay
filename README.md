@@ -116,7 +116,7 @@ settings window also has full instructions (**How to use**) in your language.
 
 - **Chat isn't delayed** by this plugin. Use Twitch's AutoMod, blocked terms and chat delay for chat.
 - Works with **Twitch and any RTMP server**. H.264 video and AAC audio (OBS's defaults).
-- **Twitch VOD Track** (Settings → Output → Streaming, Advanced mode) keeps working: the VOD track goes through the same delay and dump as the live audio, so music you keep off the VOD track stays out of your VODs.
+- **Twitch VOD Track** (OBS Settings → Output) keeps working: the VOD track goes through the same delay and dump as the live audio, so music you keep off the VOD track stays out of your VODs. While you stream, the panel shows whether the VOD track is on.
 - The keyframe interval is set to 2 seconds, as Twitch requires; it also keeps the freeze after a press short.
 - OBS's **Settings → Stream** page can't show plugin services, so it keeps showing Twitch. Saving changes there turns dump delay off: tick it again in the panel.
 - Not supported yet: RTMPS, Enhanced Broadcasting (multitrack), macOS and Linux.

@@ -2,6 +2,15 @@
 
 All notable changes to Dump Delay are listed here.
 
+## 0.1.2 (2026-11-26)
+
+### Added
+- **The Dump Delay panel shows the Twitch VOD Track** while you stream, under
+  the status line. *On (audio track 2)* means Twitch is getting the VOD track
+  from that mixer track. An amber warning means the VOD track is off: your VOD
+  gets the live audio, music included. To turn it on, go to OBS Settings →
+  Output → Twitch VOD Track. Hover over the line for help.
+
 ## 0.1.1 (2026-11-26)
 
 ### Fixed

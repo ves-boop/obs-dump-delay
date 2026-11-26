@@ -21,7 +21,11 @@ param(
 	[string]$OutDir = (Join-Path $PSScriptRoot '..\test-output'),
 	[int]$DelaySec = 10,
 	[int]$RunSec = 70,
-	[int]$DumpAt = 25
+	[int]$DumpAt = 25,
+	# turn the profile's VOD track off (the dock should warn)
+	[switch]$NoVod,
+	# save a screenshot of the screen (dock included) while live
+	[switch]$Screenshot
 )
 
 $ErrorActionPreference = 'Stop'
@@ -75,7 +79,7 @@ try {
 	Set-Param 'Output' 'DelayEnable' 'false'
 	Set-Param 'AdvOut' 'Encoder' 'obs_x264'
 	Set-Param 'AdvOut' 'TrackIndex' 1
-	Set-Param 'AdvOut' 'VodTrackEnabled' 'true'
+	Set-Param 'AdvOut' 'VodTrackEnabled' ($NoVod ? 'false' : 'true')
 	Set-Param 'AdvOut' 'VodTrackIndex' 2
 	# reload so the output handler is rebuilt in Advanced mode
 	Invoke-Obs $ws 'SetCurrentProfile' @{ profileName = $origProfile } | Out-Null
@@ -143,6 +147,18 @@ try {
 	$sw = [Diagnostics.Stopwatch]::StartNew()
 	Invoke-Obs $ws 'StartStream' | Out-Null
 	Mark 'stream_start'
+
+	if ($Screenshot) {
+		Start-Sleep -Seconds 3
+		Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+		$bounds = [Windows.Forms.Screen]::PrimaryScreen.Bounds
+		$bmp = [Drawing.Bitmap]::new($bounds.Width, $bounds.Height)
+		[Drawing.Graphics]::FromImage($bmp).CopyFromScreen($bounds.Location, [Drawing.Point]::Empty, $bounds.Size)
+		$shot = Join-Path $OutDir "vod-$tag$($NoVod ? '-novod' : '').png"
+		$bmp.Save($shot, [Drawing.Imaging.ImageFormat]::Png)
+		$bmp.Dispose()
+		Mark 'screenshot'
+	}
 
 	if ($Mode -eq 'DumpDelay') {
 		while ($sw.Elapsed.TotalSeconds -lt $DumpAt) { Start-Sleep -Milliseconds 50 }
