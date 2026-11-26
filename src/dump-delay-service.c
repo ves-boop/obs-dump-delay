@@ -31,9 +31,29 @@ static const char *dds_get_name(void *type_data)
 	return obs_module_text("Service.Name");
 }
 
+/* OBS sends the Twitch VOD track only when the streaming service's "service"
+ * setting names a service that supports it (ServiceSupportsVodTrack() in the
+ * frontend: "Twitch"). Carry the name over from the rtmp_common service we
+ * replaced, so the VOD track keeps working with dump delay on. */
+static void inherit_service_name(obs_data_t *settings)
+{
+	if (*obs_data_get_string(settings, "service"))
+		return;
+	if (strcmp(obs_data_get_string(settings, "prev_type"), "rtmp_common") != 0)
+		return;
+
+	obs_data_t *prev = obs_data_get_obj(settings, "prev_settings");
+	const char *name = prev ? obs_data_get_string(prev, "service") : "";
+	if (*name)
+		obs_data_set_string(settings, "service", name);
+	obs_data_release(prev);
+}
+
 static void dds_update(void *data, obs_data_t *settings)
 {
 	struct dump_delay_service *s = data;
+
+	inherit_service_name(settings);
 
 	bfree(s->server);
 	bfree(s->key);

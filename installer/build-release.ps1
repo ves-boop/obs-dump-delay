@@ -37,6 +37,8 @@ New-Item -ItemType Directory -Force $stage | Out-Null
 # 1. build and stage the plugin folder (no .pdb in the release)
 Push-Location $root
 try {
+	# configure first: the version comes from buildspec.json at configure time
+	Invoke-Checked $cmake @('--preset', $Preset)
 	Invoke-Checked $cmake @('--build', '--preset', $Preset)
 	Invoke-Checked $cmake @('--install', 'build_x64', '--config', 'RelWithDebInfo', '--prefix', $stage)
 } finally { Pop-Location }

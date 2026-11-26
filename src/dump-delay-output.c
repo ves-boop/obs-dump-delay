@@ -35,6 +35,13 @@
  * No second encoder and no re-encoding: the only extra work is copying
  * packets. Viewers see the slate for about 2 * delay + one keyframe interval.
  *
+ * Twitch VOD track: when OBS attaches a second audio encoder (Settings >
+ * Output > Streaming > "Twitch VOD Track"), it is sent as Enhanced RTMP
+ * multitrack audio, track 1, byte for byte as OBS's own rtmp_output does.
+ * Twitch plays track 0 live and archives track 1 in the VOD, so music kept
+ * off the VOD mixer stays out of the VOD. Both tracks go through the same
+ * delay, dump and silence logic.
+ *
  * Timestamps: "e" = encoder time (ms), "o" = output time (ms). A packet is
  * sent when o + k <= wall clock (ms); k is fixed when the first packet
  * arrives so that o + k = arrival + delay.
@@ -60,6 +67,14 @@
 
 /* Connect this long before the first buffered packet is due. */
 #define CONNECT_LEAD_MS 2000
+
+/* Output time of the first packet. Small and positive, so no packet is ever
+ * negative (B-frame dts, rounding between tracks): libavformat would shift
+ * its own streams to fix that, but not the VOD tags written by hand. */
+#define FIRST_PACKET_O_MS 100
+
+/* audio track 0 = live, track 1 = Twitch VOD */
+#define MAX_TRACKS 2
 
 enum dd_state {
 	DD_NORMAL,
@@ -106,6 +121,7 @@ struct dump_delay {
 	AVStream *astream;
 	AVPacket *avpkt;
 	bool header_written;
+	bool vod_track; /* second audio encoder attached, sent as track 1 */
 	uint8_t *silence;
 	int silence_size;
 	double silence_ms;
@@ -122,10 +138,11 @@ struct dump_delay {
 	bool restore_requested;
 	int64_t last_v_o;     /* last video dts sent */
 	int64_t last_v_pts_o; /* highest video pts sent */
-	int64_t last_a_o;
-	bool silence_active;
-	bool silence_started;
-	double next_silence_o;
+	/* per audio track */
+	int64_t last_a_o[MAX_TRACKS];
+	bool silence_active[MAX_TRACKS];
+	bool silence_started[MAX_TRACKS];
+	double next_silence_o[MAX_TRACKS];
 };
 
 static pthread_mutex_t active_mutex;
@@ -339,6 +356,62 @@ done:
 	return ok;
 }
 
+/* One FLV audio tag for the VOD track, laid out exactly like OBS's
+ * flv_packet_audio_ex() for idx > 0 (Enhanced RTMP v2 multitrack):
+ *   ExHeader|Multitrack, OneTrack|packet type, "mp4a", track id, payload.
+ * Written into the same AVIO stream as the muxer's own tags. */
+#define FLV_AUDIO_EX_MULTITRACK ((9 << 4) | 5)
+#define FLV_AUDIO_PKT_SEQ_START 0
+#define FLV_AUDIO_PKT_FRAMES 1
+#define VOD_TRACK_ID 1
+
+static bool write_vod_tag(struct dump_delay *dd, const uint8_t *data,
+			  size_t size, int64_t ts_ms, int pkt_type)
+{
+	AVIOContext *pb = dd->fmt->pb;
+	uint32_t body = (uint32_t)size + 7;
+
+	avio_w8(pb, 8); /* audio */
+	avio_wb24(pb, body);
+	avio_wb24(pb, (uint32_t)(ts_ms & 0xFFFFFF));
+	avio_w8(pb, (uint8_t)((ts_ms >> 24) & 0x7F));
+	avio_wb24(pb, 0); /* stream id */
+	avio_w8(pb, FLV_AUDIO_EX_MULTITRACK);
+	avio_w8(pb, pkt_type); /* MULTITRACKTYPE_ONE_TRACK (0) | type */
+	avio_write(pb, (const unsigned char *)"mp4a", 4);
+	avio_w8(pb, VOD_TRACK_ID);
+	avio_write(pb, data, (int)size);
+	avio_wb32(pb, body + 11); /* previous tag size */
+
+	if (pb->error < 0) {
+		log_av_error("VOD track write failed", pb->error);
+		return false;
+	}
+	dd->total_bytes += size;
+	return true;
+}
+
+static void setup_vod_track(struct dump_delay *dd, obs_encoder_t *aenc)
+{
+	obs_encoder_t *vod = obs_output_get_audio_encoder(dd->output, 1);
+
+	dd->vod_track = false;
+	if (!vod)
+		return;
+
+	if (obs_encoder_get_sample_rate(vod) != obs_encoder_get_sample_rate(aenc) ||
+	    audio_output_get_channels(obs_encoder_audio(vod)) !=
+		    audio_output_get_channels(obs_encoder_audio(aenc))) {
+		do_log(LOG_WARNING,
+		       "VOD track encoder format differs from the stream track, VOD track not sent");
+		return;
+	}
+
+	dd->vod_track = true;
+	do_log(LOG_INFO, "Twitch VOD track: mixer track %zu sent as audio track 1",
+	       obs_encoder_get_mixer_index(vod) + 1);
+}
+
 static bool open_muxer(struct dump_delay *dd)
 {
 	obs_encoder_t *venc = obs_output_get_video_encoder(dd->output);
@@ -346,6 +419,8 @@ static bool open_muxer(struct dump_delay *dd)
 	int sample_rate = (int)obs_encoder_get_sample_rate(aenc);
 	int channels = (int)audio_output_get_channels(obs_encoder_audio(aenc));
 	int ret;
+
+	setup_vod_track(dd, aenc);
 
 	if (!make_silence(dd, sample_rate, channels)) {
 		do_log(LOG_WARNING, "could not create AAC silence");
@@ -403,6 +478,21 @@ static bool open_muxer(struct dump_delay *dd)
 		return false;
 	}
 	dd->header_written = true;
+
+	if (dd->vod_track) {
+		uint8_t *asc;
+		size_t asc_size;
+		obs_encoder_t *vod = obs_output_get_audio_encoder(dd->output, 1);
+
+		if (!obs_encoder_get_extra_data(vod, &asc, &asc_size) ||
+		    !asc_size) {
+			do_log(LOG_WARNING, "VOD track encoder has no extradata");
+			return false;
+		}
+		if (!write_vod_tag(dd, asc, asc_size, 0,
+				   FLV_AUDIO_PKT_SEQ_START))
+			return false;
+	}
 
 	dd->avpkt = av_packet_alloc();
 	return dd->avpkt != NULL;
@@ -470,14 +560,21 @@ static bool send_packet(struct dump_delay *dd, struct encoder_packet *p)
 				p->keyframe);
 	}
 
-	/* overlaps the silence already sent */
-	if (dts <= dd->last_a_o)
+	size_t t = p->track_idx;
+	if (t > 0 && !dd->vod_track)
 		return true;
 
-	dd->last_a_o = dts;
-	dd->silence_active = false;
-	dd->silence_started = false;
-	return write_av(dd, dd->astream, p->data, p->size, dts, pts, true);
+	/* overlaps the silence already sent */
+	if (dts <= dd->last_a_o[t])
+		return true;
+
+	dd->last_a_o[t] = dts;
+	dd->silence_active[t] = false;
+	dd->silence_started[t] = false;
+	if (t == 0)
+		return write_av(dd, dd->astream, p->data, p->size, dts, pts,
+				true);
+	return write_vod_tag(dd, p->data, p->size, dts, FLV_AUDIO_PKT_FRAMES);
 }
 
 static void begin_dump(struct dump_delay *dd)
@@ -489,7 +586,8 @@ static void begin_dump(struct dump_delay *dd)
 			   dd->cut_margin_ms * 1000;
 	dd->have_switch = false;
 	dd->restore_requested = false;
-	dd->silence_active = true;
+	for (size_t t = 0; t < MAX_TRACKS; t++)
+		dd->silence_active[t] = true;
 	os_atomic_set_long(&dd->status, DUMP_DELAY_DUMPING);
 
 	do_log(LOG_INFO, "dump: buffer discarded, waiting for a slate keyframe");
@@ -595,31 +693,49 @@ static bool process_queue(struct dump_delay *dd, int64_t now)
 	}
 }
 
-static bool emit_silence(struct dump_delay *dd, int64_t now)
+/* The same silence packet serves both tracks: same sample rate, channels
+ * and AAC-LC profile as each track's own AudioSpecificConfig. */
+static bool emit_silence_track(struct dump_delay *dd, size_t t, int64_t now)
 {
-	if (!dd->silence_active || !dd->have_k)
+	if (!dd->silence_active[t])
 		return true;
 
-	if (!dd->silence_started) {
-		dd->next_silence_o = dd->last_a_o != INT64_MIN
-					     ? (double)dd->last_a_o + dd->silence_ms
-					     : (double)(now - dd->k);
-		dd->silence_started = true;
+	if (!dd->silence_started[t]) {
+		dd->next_silence_o[t] =
+			dd->last_a_o[t] != INT64_MIN
+				? (double)dd->last_a_o[t] + dd->silence_ms
+				: (double)(now - dd->k);
+		dd->silence_started[t] = true;
 	}
 
-	while ((int64_t)dd->next_silence_o + dd->k <= now) {
-		int64_t o = (int64_t)dd->next_silence_o;
+	while ((int64_t)dd->next_silence_o[t] + dd->k <= now) {
+		int64_t o = (int64_t)dd->next_silence_o[t];
+		bool ok;
 
-		dd->next_silence_o += dd->silence_ms;
-		if (o <= dd->last_a_o)
+		dd->next_silence_o[t] += dd->silence_ms;
+		if (o <= dd->last_a_o[t])
 			continue;
 
-		dd->last_a_o = o;
-		if (!write_av(dd, dd->astream, dd->silence, dd->silence_size, o,
-			      o, true))
+		dd->last_a_o[t] = o;
+		if (t == 0)
+			ok = write_av(dd, dd->astream, dd->silence,
+				      dd->silence_size, o, o, true);
+		else
+			ok = write_vod_tag(dd, dd->silence, dd->silence_size, o,
+					   FLV_AUDIO_PKT_FRAMES);
+		if (!ok)
 			return false;
 	}
 	return true;
+}
+
+static bool emit_silence(struct dump_delay *dd, int64_t now)
+{
+	if (!dd->have_k)
+		return true;
+	if (!emit_silence_track(dd, 0, now))
+		return false;
+	return !dd->vod_track || emit_silence_track(dd, 1, now);
 }
 
 static void reset_worker_state(struct dump_delay *dd)
@@ -632,9 +748,12 @@ static void reset_worker_state(struct dump_delay *dd)
 	dd->restore_requested = false;
 	dd->last_v_o = INT64_MIN;
 	dd->last_v_pts_o = INT64_MIN;
-	dd->last_a_o = INT64_MIN;
-	dd->silence_active = false;
-	dd->silence_started = false;
+	for (size_t t = 0; t < MAX_TRACKS; t++) {
+		dd->last_a_o[t] = INT64_MIN;
+		dd->silence_active[t] = false;
+		dd->silence_started[t] = false;
+	}
+	dd->vod_track = false;
 	dd->total_bytes = 0;
 	os_atomic_set_bool(&dd->dump_requested, false);
 }
@@ -653,6 +772,13 @@ static bool first_packet_due(struct dump_delay *dd, int64_t now)
 
 	if (!have)
 		return false;
+
+	if (!dd->have_k) {
+		/* packets arrive in dts order across all tracks, so anchoring
+		 * the front one keeps every later packet non-negative */
+		dd->map = (struct ts_map){FIRST_PACKET_O_MS,
+					  ts_to_ms(q.pkt.dts, &q.pkt), 1};
+	}
 
 	int64_t o = map_ts(&dd->map, ts_to_ms(q.pkt.dts, &q.pkt));
 	if (!dd->have_k) {
@@ -851,7 +977,7 @@ static void dd_encoded_packet(void *data, struct encoder_packet *packet)
 		obs_output_signal_stop(dd->output, OBS_OUTPUT_ENCODE_ERROR);
 		return;
 	}
-	if (packet->type == OBS_ENCODER_AUDIO && packet->track_idx != 0)
+	if (packet->type == OBS_ENCODER_AUDIO && packet->track_idx >= MAX_TRACKS)
 		return;
 
 	obs_encoder_packet_ref(&q.pkt, packet);
@@ -875,7 +1001,10 @@ static uint64_t dd_get_total_bytes(void *data)
 
 static struct obs_output_info dump_delay_output = {
 	.id = "dump_delay_output",
-	.flags = OBS_OUTPUT_AV | OBS_OUTPUT_ENCODED | OBS_OUTPUT_SERVICE,
+	/* MULTI_TRACK_AUDIO lets OBS attach its Twitch VOD track encoder at
+	 * index 1, as it does for rtmp_output */
+	.flags = OBS_OUTPUT_AV | OBS_OUTPUT_ENCODED | OBS_OUTPUT_SERVICE |
+		 OBS_OUTPUT_MULTI_TRACK_AUDIO,
 	.protocols = "RTMP",
 	.encoded_video_codecs = "h264",
 	.encoded_audio_codecs = "aac",
